@@ -11,6 +11,7 @@ func main() {
 	start := time.Now()
 	archiveDetails := GetArchiveDetails()
 	fileList := archiveDetails.FileList()
+	fmt.Printf("File list: %v\t", fileList)
 	err := archiver.Archive(fileList, archiveDetails.TarGz())
 	if err != nil {
 		panic(err)
