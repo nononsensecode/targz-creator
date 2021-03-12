@@ -1,154 +1,126 @@
 package main
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"errors"
 	"flag"
-	"io"
+	"fmt"
 	"io/fs"
-	"log"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
-
-	"nononsensecode.com/backup-creator/cmd/archive/dto"
 )
 
-func main() {
-	archiveDetails := archiveDetails()
+type ArchiveDetails struct {
+	ArchiveDir string
+	DestinationDir string
+	ArchiveFilename string
+	ExclusionList []string
+}
 
-	// Create archive file
-	archiveFile, err := os.Create(archiveDetails.DestinationFilename())
-	if err != nil {
-		log.Fatalln("Error creating archive file", err)
-	}
-	defer archiveFile.Close()
+func (a *ArchiveDetails) Destination() string {
+	return path.Join(a.DestinationDir, a.ArchiveFilename)
+}
 
-	gzipFile := gzip.NewWriter(archiveFile)
-	defer gzipFile.Close()
-	tarFile := tar.NewWriter(gzipFile)
-	defer tarFile.Close()
+func (a *ArchiveDetails) TarGz() string {
+	return a.Destination() + ".tar.gz"
+}
 
-	_, err = os.Stat(archiveDetails.ArchiveDir)
-	if err != nil {
-		log.Fatalf("source directory %s does not exist\n", archiveDetails.ArchiveDir)
-	}
-
-	err = filepath.Walk(archiveDetails.ArchiveDir, func(path string, info fs.FileInfo, err error) error {
+func (a *ArchiveDetails) FileList() []string {
+	var fileList []string
+	filepath.Walk(a.ArchiveDir, func(path string, info fs.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
-		exclude, isDir := exclude(archiveDetails, info)
-		if exclude {
-			if isDir {
-				return filepath.SkipDir
-			}
+		// Do not include the root directory in the list
+		if a.ArchiveDir == path {
 			return nil
 		}
 
-		header, err := tar.FileInfoHeader(info, path)
-		if err != nil {
-			return err
+		for _, filename := range a.ExclusionList {
+			if isDir(filename) {
+				if info.IsDir() && info.Name() == strings.Trim(filename, "/") {
+					return filepath.SkipDir
+				}
+			} else {
+				if info.Name() == filename {
+					return nil
+				}
+			}
 		}
-		header.Name = path
 
-		err = tarFile.WriteHeader(header)
-		if err != nil {
-			return err
-		}
-
+		// Add first level directory only, don't walk too deep
 		if info.IsDir() {
-			return nil
+			fileList = append(fileList, path)
+			return filepath.SkipDir
 		}
 
-		file, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer file.Close()
+		fileList = append(fileList, path)
 
-		_, err = io.Copy(tarFile, file)
-		return err
+		return nil		
 	})
+
+	return fileList
 }
 
-func exclude(archiveDetails *dto.ArchiveDetails, info fs.FileInfo) (bool, bool) {
-	for _, filename := range archiveDetails.ExclusionList {
-		if strings.HasSuffix(filename, "/") {
-			if matchDir(filename, info) {
-				return true, true
-			}
-		} else {
-			if matchFile(filename, info) {
-				return true, false
-			}
-		}
-	}
-
-	return false, false
+func isDir(path string) bool {
+	return strings.HasSuffix(path, "/")
 }
 
-func matchDir(dirname string, info fs.FileInfo) bool {
-	dirname = strings.Trim(dirname, "/")
-	if info.IsDir() && info.Name() == dirname {
-		return true
-	}
-	return false
-}
-
-func matchFile(filename string, info fs.FileInfo) bool {
-	if info.Name() == filename {
-		return true
-	}
-	return false
-}
-
-func archiveDetails() *dto.ArchiveDetails {
-	archiveDetails := dto.ArchiveDetails{
-		ArchiveName: "content",
+func GetArchiveDetails() *ArchiveDetails {
+	var archiveDetails = ArchiveDetails{
 		DestinationDir: ".",
+		ArchiveFilename: "content",
 		ExclusionList: []string{},
 	}
 
-	flag.Func("f", "`filename` for the archive", func(s string) error {
+	flag.Func("s", "`source directory`", func(s string) error {
 		if strings.Trim(s, " ") == "" {
-			return errors.New("file name cannot be set empty")
+			return errors.New("source directory cannot be set empty")
 		}
 
-		archiveDetails.ArchiveName = s
-		return nil
-	})
-
-	flag.Func("s", "archive `directory name`", func(s string) error {
-		if strings.Trim(s, " ") == "" {
-			return errors.New("archive directory is not set")
+		err := doesExist(s)
+		if err != nil {
+			return err
 		}
 
 		archiveDetails.ArchiveDir = s
-		return doesExist(archiveDetails.ArchiveDir)
+		return nil
 	})
 
-	flag.Func("d", "`directory name` where arhive to be stored", func(s string) error {
+	flag.Func("d", "`destination directory`", func(s string) error {
 		if strings.Trim(s, " ") == "" {
 			return errors.New("destination directory cannot be set empty")
 		}
 
-		archiveDetails.DestinationDir = s
-		return doesExist(archiveDetails.DestinationDir)
-	})
+		err := doesExist(s)
+		if err != nil {
+			return err
+		}
 
-	flag.Func("e", "comma separated `list of files` or dirs that are to be excluded", func(s string) error {
-		trimmed := strings.Trim(s, " ")
-		archiveDetails.ExclusionList = strings.Split(trimmed, ",")
+		archiveDetails.DestinationDir = s
 		return nil
 	})
 
-	flag.Parse()	
+	flag.Func("f", "`archiv file name`", func(s string) error {
+		if strings.Trim(s, " ") == "" {
+			return errors.New("archive filename cannot be set empty")
+		}
+
+		archiveDetails.ArchiveFilename = s
+		return nil
+	})
+
+	flag.Func("e", "`list of filenames or dirs` separated by comma", func(s string) error {
+		archiveDetails.ExclusionList = strings.Split(s, ",")
+		return nil
+	})
+
+	flag.Parse()
 
 	if archiveDetails.ArchiveDir == "" {
-		println("archive directory is not set")
+		fmt.Println("source directory is not set")
 		flag.CommandLine.Usage()
 		os.Exit(2)
 	}
@@ -156,11 +128,11 @@ func archiveDetails() *dto.ArchiveDetails {
 	return &archiveDetails
 }
 
-
 func doesExist(path string) error {
 	_, err := os.Stat(path)
 	if os.IsNotExist(err) {
-		return err
+		return errors.New("file '" + path + "' does not exist")
 	}
+
 	return nil
 }
