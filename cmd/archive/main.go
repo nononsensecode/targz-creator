@@ -4,7 +4,8 @@ import "github.com/mholt/archiver/v3"
 
 func main() {
 	archiveDetails := GetArchiveDetails()
-	err := archiver.Archive(archiveDetails.FileList(), archiveDetails.TarGz())
+	fileList := archiveDetails.FileList()
+	err := archiver.Archive(fileList, archiveDetails.TarGz())
 	if err != nil {
 		panic(err)
 	}
